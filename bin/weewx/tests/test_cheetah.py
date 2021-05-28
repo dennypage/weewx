@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 weeutil.logger.setup('test_cheetah', {})
 
 
+class RaiseException(object):
+    def __str__(self):
+        raise AttributeError("Fine mess you got me in!")
+
+
 class TestFilter(unittest.TestCase):
     "Test the function filter() in AssureUnicode"
     def test_none(self):
@@ -58,7 +63,13 @@ class TestFilter(unittest.TestCase):
         val_vh = ValueHelper(ValueTuple(20.0, 'degree_C', 'group_temperature'))
         au = weewx.cheetahgenerator.AssureUnicode()
         filtered_value = au.filter(val_vh)
-        self.assertEqual(filtered_value, u"68.0°F")
+        self.assertEqual(filtered_value, u"20.0°C")
+
+    def test_RaiseException(self):
+        r = RaiseException()
+        au = weewx.cheetahgenerator.AssureUnicode()
+        filtered_value = au.filter(r)
+        self.assertEqual(filtered_value, u'Fine mess you got me in!?')
 
 
 if __name__ == '__main__':

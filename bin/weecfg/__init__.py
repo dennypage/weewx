@@ -1,6 +1,6 @@
 # coding: utf-8
 #
-#    Copyright (c) 2009-2020 Tom Keffer <tkeffer@gmail.com>
+#    Copyright (c) 2009-2021 Tom Keffer <tkeffer@gmail.com>
 #
 #    See the file LICENSE.txt for your rights.
 #
@@ -171,12 +171,18 @@ def read_config(config_path, args=None, locations=DEFAULT_LOCATIONS,
     # Find and open the config file:
     config_path = find_file(config_path, args,
                             locations=locations, file_name=file_name)
-    # Now open it up and parse it.
-    config_dict = configobj.ConfigObj(config_path,
-                                      interpolation=interpolation,
-                                      file_error=True,
-                                      encoding='utf-8',
-                                      default_encoding='utf-8')
+    try:
+        # Now open it up and parse it.
+        config_dict = configobj.ConfigObj(config_path,
+                                          interpolation=interpolation,
+                                          file_error=True,
+                                          encoding='utf-8',
+                                          default_encoding='utf-8')
+    except configobj.ConfigObjError as e:
+        # Add on the path of the offending file, then reraise.
+        e.msg += ' File %s' % config_path
+        raise
+
     return config_path, config_dict
 
 
@@ -376,6 +382,10 @@ def update_config(config_dict):
 
     update_to_v40(config_dict)
 
+    update_to_v42(config_dict)
+
+    update_to_v43(config_dict)
+
 
 def merge_config(config_dict, template_dict):
     """Merge the template (distribution) dictionary into the user's dictionary.
@@ -486,7 +496,7 @@ def update_to_v25(config_dict):
     try:
         # V2.5 saw the introduction of the station registry:
         if 'StationRegistry' not in config_dict['StdRESTful']:
-            stnreg_dict = configobj.ConfigObj(StringIO("""[StdRESTful]
+            stnreg_dict = weeutil.config.config_from_str("""[StdRESTful]
 
         [[StationRegistry]]
             # Uncomment the following line to register this weather station.
@@ -502,7 +512,7 @@ def update_to_v25(config_dict):
 
             driver = weewx.restful.StationRegistry
 
-    """), encoding='utf-8')
+    """)
             config_dict.merge(stnreg_dict)
     except KeyError:
         pass
@@ -660,7 +670,7 @@ def update_to_v26(config_dict):
     # Support for the WOW uploader was introduced
     try:
         if 'WOW' not in config_dict['StdRESTful']:
-            config_dict.merge(configobj.ConfigObj(StringIO("""[StdRESTful]
+            config_dict.merge(weeutil.config.config_from_str("""[StdRESTful]
 
             [[WOW]]
                 # This section is for configuring posts to WOW
@@ -673,7 +683,7 @@ def update_to_v26(config_dict):
                 log_success = True
                 log_failure = True
 
-        """), encoding='utf-8'))
+        """))
             config_dict['StdRESTful'].comments['WOW'] = ['']
     except KeyError:
         pass
@@ -681,7 +691,7 @@ def update_to_v26(config_dict):
     # Support for the AWEKAS uploader was introduced
     try:
         if 'AWEKAS' not in config_dict['StdRESTful']:
-            config_dict.merge(configobj.ConfigObj(StringIO("""[StdRESTful]
+            config_dict.merge(weeutil.config.config_from_str("""[StdRESTful]
 
             [[AWEKAS]]
                 # This section is for configuring posts to AWEKAS
@@ -694,7 +704,7 @@ def update_to_v26(config_dict):
                 log_success = True
                 log_failure = True
 
-        """), encoding='utf-8'))
+        """))
             config_dict['StdRESTful'].comments['AWEKAS'] = ['']
     except KeyError:
         pass
@@ -775,7 +785,7 @@ def update_to_v30(config_dict):
 
     if 'DataBindings' not in config_dict:
         # Insert a [DataBindings] section. First create it
-        c = configobj.ConfigObj(StringIO("""[DataBindings]
+        c = weeutil.config.config_from_str("""[DataBindings]
             # This section binds a data store to a database
 
             [[wx_binding]]
@@ -789,7 +799,7 @@ def update_to_v30(config_dict):
                 # It is *only* used when the database is created.
                 schema = schemas.wview.schema
 
-        """), encoding='utf-8')
+        """)
         # Now merge it in:
         config_dict.merge(c)
         # For some reason, ConfigObj strips any leading comments. Put them back:
@@ -809,7 +819,7 @@ def update_to_v30(config_dict):
 
     # StdWXCalculate is new
     if 'StdWXCalculate' not in config_dict:
-        c = configobj.ConfigObj(StringIO("""[StdWXCalculate]
+        c = weeutil.config.config_from_str("""[StdWXCalculate]
     # Derived quantities are calculated by this service.  Possible values are:
     #  hardware        - use the value provided by hardware
     #  software        - use the value calculated by weewx
@@ -823,7 +833,7 @@ def update_to_v30(config_dict):
     heatindex = prefer_hardware
     dewpoint = prefer_hardware
     inDewpoint = prefer_hardware
-    rainRate = prefer_hardware"""), encoding='utf-8')
+    rainRate = prefer_hardware""")
         # Now merge it in:
         config_dict.merge(c)
         # For some reason, ConfigObj strips any leading comments. Put them back:
@@ -1075,23 +1085,22 @@ def update_to_v39(config_dict):
         std_report_comment = config_dict.comments['StdReport']
 
         if 'Defaults' not in config_dict['StdReport']:
-            defaults_dict = configobj.ConfigObj(StringIO(DEFAULTS), encoding='utf-8')
+            defaults_dict = weeutil.config.config_from_str(DEFAULTS)
             weeutil.config.merge_config(config_dict, defaults_dict)
             reorder_sections(config_dict['StdReport'], 'Defaults', 'RSYNC', after=True)
 
         if 'SeasonsReport' not in config_dict['StdReport']:
-            seasons_options_dict = configobj.ConfigObj(StringIO(SEASONS_REPORT), encoding='utf-8')
+            seasons_options_dict = weeutil.config.config_from_str(SEASONS_REPORT)
             weeutil.config.merge_config(config_dict, seasons_options_dict)
             reorder_sections(config_dict['StdReport'], 'SeasonsReport', 'FTP')
 
         if 'SmartphoneReport' not in config_dict['StdReport']:
-            smartphone_options_dict = configobj.ConfigObj(StringIO(SMARTPHONE_REPORT),
-                                                          encoding='utf-8')
+            smartphone_options_dict = weeutil.config.config_from_str(SMARTPHONE_REPORT)
             weeutil.config.merge_config(config_dict, smartphone_options_dict)
             reorder_sections(config_dict['StdReport'], 'SmartphoneReport', 'FTP')
 
         if 'MobileReport' not in config_dict['StdReport']:
-            mobile_options_dict = configobj.ConfigObj(StringIO(MOBILE_REPORT), encoding='utf-8')
+            mobile_options_dict = weeutil.config.config_from_str(MOBILE_REPORT)
             weeutil.config.merge_config(config_dict, mobile_options_dict)
             reorder_sections(config_dict['StdReport'], 'MobileReport', 'FTP')
 
@@ -1228,6 +1237,47 @@ def update_to_v40(config_dict):
         config_dict['version'] = '4.0.0'
 
 
+def update_to_v42(config_dict):
+    """Update a configuration file to V4.2
+
+    - Add new engine service group xtype_services
+    """
+
+    if 'Engine' in config_dict and 'Services' in config_dict['Engine']:
+        # If it's not there already, inject 'xtype_services'
+        if 'xtype_services' not in config_dict['Engine']['Services']:
+            config_dict['Engine']['Services']['xtype_services'] = \
+                ['weewx.wxxtypes.StdWXXTypes',
+                 'weewx.wxxtypes.StdPressureCooker',
+                 'weewx.wxxtypes.StdRainRater',
+                 'weewx.wxxtypes.StdDelta']
+
+        # V4.2.0 neglected to include StdDelta. If necessary, add it:
+        if 'weewx.wxxtypes.StdDelta' not in config_dict['Engine']['Services']['xtype_services']:
+            config_dict['Engine']['Services']['xtype_services'].append('weewx.wxxtypes.StdDelta')
+
+        # Make sure xtype_services are located just before the 'archive_services'
+        reorder_scalars(config_dict['Engine']['Services'].scalars,
+                        'xtype_services',
+                        'archive_services')
+        config_dict['Engine']['Services'].comments['prep_services'] = []
+        config_dict['Engine']['Services'].comments['xtype_services'] = []
+        config_dict['Engine'].comments['Services'] = ['The following section specifies which '
+                                                      'services should be run and in what order.']
+    config_dict['version'] = '4.2.0'
+
+
+def update_to_v43(config_dict):
+    """Update a configuration file to V4.3
+
+    - Set [StdReport] / log_failure to True
+    """
+    if 'StdReport' in config_dict and 'log_failure' in config_dict['StdReport']:
+        config_dict['StdReport']['log_failure'] = True
+
+    config_dict['version'] = '4.3.0'
+
+
 def update_units(config_dict, unit_system_name, logger=None, debug=False):
     """Update [StdReport][Defaults] with the desired unit system"""
 
@@ -1239,7 +1289,7 @@ def update_units(config_dict, unit_system_name, logger=None, debug=False):
         except KeyError:
             # We are missing the [StdReport] / [[Defaults]] / [[[Units]]] / [[[[Groups]]]] section.
             # Create a section, then merge it into the ConfigObj.
-            unit_dict = configobj.ConfigObj(StringIO(UNIT_DEFAULTS), encoding='utf-8')
+            unit_dict = weeutil.config.config_from_str(UNIT_DEFAULTS)
             weeutil.config.merge_config(config_dict, unit_dict)
 
 

@@ -9,7 +9,7 @@ For more information about Cheetah, see http://www.cheetahtemplate.org
 
 Configuration Options
 
-  encoding = (html_entities|utf8|strict_ascii)
+  encoding = (html_entities|utf8|strict_ascii|normalized_ascii)
   template = filename.tmpl           # must end with .tmpl
   stale_age = s                      # age in seconds
   search_list = a, b, c
@@ -32,14 +32,14 @@ Example:
 [CheetahGenerator]
     # How to specify search list extensions:
     search_list_extensions = user.forecast.ForecastVariables, user.extstats.ExtStatsVariables
-    encoding = html_entities      # html_entities, utf8, strict_ascii
+    encoding = html_entities
     [[SummaryByMonth]]                              # period
         [[[NOAA_month]]]                            # report
-            encoding = strict_ascii
+            encoding = normalized_ascii
             template = NOAA-YYYY-MM.txt.tmpl
     [[SummaryByYear]]
         [[[NOAA_year]]]]
-            encoding = strict_ascii
+            encoding = normalized_ascii
             template = NOAA-YYYY.txt.tmpl
     [[ToDate]]
         [[[day]]]
@@ -58,9 +58,11 @@ Example:
 from __future__ import absolute_import
 
 import datetime
+import json
 import logging
 import os.path
 import time
+import unicodedata
 
 import Cheetah.Filters
 import Cheetah.Template
@@ -87,7 +89,8 @@ default_search_list = [
     "weewx.cheetahgenerator.Current",
     "weewx.cheetahgenerator.Stats",
     "weewx.cheetahgenerator.UnitInfo",
-    "weewx.cheetahgenerator.Extras"]
+    "weewx.cheetahgenerator.Extras",
+    "weewx.cheetahgenerator.JSONHelpers"]
 
 
 # =============================================================================
@@ -313,19 +316,28 @@ class CheetahGenerator(weewx.reportengine.ReportGenerator):
                 # Under Python 2, Cheetah V2 will crash if given a template file name in Unicode,
                 # so make sure it's a string first, using six.ensure_str().
                 compiled_template = Cheetah.Template.Template(
-                    file=six.ensure_str(template, encoding='utf-8'),
+                    file=six.ensure_str(template),
                     searchList=searchList,
                     filter='AssureUnicode',
                     filtersLib=weewx.cheetahgenerator)
 
+                # We have a compiled template in hand. Evaluate it. The result will be a long
+                # Unicode string.
                 unicode_string = compiled_template.respond()
 
+                # Time to write it out. Determine the strategy for encoding any non-ascii
+                # chartacters.
                 if encoding == 'html_entities':
                     byte_string = unicode_string.encode('ascii', 'xmlcharrefreplace')
                 elif encoding == 'strict_ascii':
                     byte_string = unicode_string.encode('ascii', 'ignore')
+                elif encoding == 'normalized_ascii':
+                    # Normalize the string, replacing accented characters with non-accented
+                    # equivalents
+                    normalized = unicodedata.normalize('NFD', unicode_string)
+                    byte_string = normalized.encode('ascii', 'ignore')
                 else:
-                    byte_string = unicode_string.encode('utf8')
+                    byte_string = unicode_string.encode(encoding)
 
                 # Open in binary mode. We are writing a byte-string, not a string
                 with open(tmpname, mode='wb') as fd:
@@ -524,7 +536,8 @@ class Almanac(SearchList):
                                              temperature=temperature_C,
                                              pressure=pressure_mbar,
                                              moon_phases=self.moonphases,
-                                             formatter=generator.formatter)
+                                             formatter=generator.formatter,
+                                             converter=generator.converter)
 
 
 class Station(SearchList):
@@ -608,6 +621,38 @@ class Extras(SearchList):
         self.Extras = ExtraDict(generator.skin_dict['Extras'] if 'Extras' in generator.skin_dict else {})
 
 
+class JSONHelpers(SearchList):
+    """Helper functions for formatting JSON"""
+
+    @staticmethod
+    def jsonize(arg):
+        """
+        Format my argument as JSON
+
+        Args:
+            arg (iterable): An iterable, such as a list, or zip structure
+
+        Returns:
+            str: The argument formatted as JSON.
+        """
+        val = list(arg)
+        return json.dumps(val, cls=weewx.units.ComplexEncoder)
+
+    @staticmethod
+    def rnd(arg, ndigits):
+        """Round a number, or sequence of numbers, to a specified number of decimal digits
+
+        Args:
+            arg (None, float, complex, list): The number or sequence of numbers to be rounded.
+                If the argument is None, then None will be returned.
+            ndigits (int): The number of decimal digits to retain.
+
+        Returns:
+            None, float, complex, list: Returns the number, or sequence of numbers, with the
+                requested number of decimal digits
+        """
+        return weeutil.weeutil.rounder(arg, ndigits)
+
 # =============================================================================
 # Filter
 # =============================================================================
@@ -617,17 +662,38 @@ class AssureUnicode(Cheetah.Filters.Filter):
     """Assures that whatever a search list extension might return, it will be converted into
     Unicode. """
 
-    def filter(self, val, **dummy_kw):
+    def filter(self, val, **kwargs):
+        """Convert the expression 'val' to unicode."""
+        # There is a 2x4 matrix of possibilities:
+        # input        PY2                 PY3
+        # _____        ________            _______
+        # bytes        decode()            decode()
+        # str          decode()           -done-
+        # unicode      -done-             N/A
+        # object       unicode()          str()
         if val is None:
-            filtered = u''
+            return u''
+
+        # Is it already unicode? This takes care of cells 4 and 5.
+        if isinstance(val, six.text_type):
+            filtered = val
+        # This conditional covers cells 1,2, and 3. That is, val is a byte string
+        elif isinstance(val, six.binary_type):
+            filtered = val.decode('utf-8')
+        # That leaves cells 7 and 8, that is val is an object, such as a ValueHelper
         else:
+            # Must be an object. Convert to unicode string
             try:
-                # Assume val is some kind of string. Try coercing it directly into unicode
-                filtered = six.ensure_text(val, encoding='utf-8')
-            except TypeError:
-                # It's not Unicode nor a byte-string. Must be a primitive or a ValueHelper.
-                #   Under Python 2, six.text_type is equivalent to calling unicode(val).
-                #   Under Python 3, it is equivalent to calling str(val).
-                # So, the results always end up as Unicode.
+                # For late tag bindings under Python 2, the following forces the invocation of
+                # __unicode__(). Under Python 3, it invokes __str__(). Either way, it can force
+                # an XTypes query. For a tag such as $day.foobar.min, where 'foobar' is an unknown
+                # type, this will cause an attribute error. Be prepared to catch it.
                 filtered = six.text_type(val)
+            except AttributeError as e:
+                # Offer a debug message.
+                log.debug("Unrecognized: %s", kwargs.get('rawExpr', e))
+                # Return the raw expression, if available. Otherwise, the exception message
+                # concatenated with a question mark.
+                filtered = kwargs.get('rawExpr', str(e) + '?')
+
         return filtered

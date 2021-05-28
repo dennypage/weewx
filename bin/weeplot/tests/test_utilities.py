@@ -39,7 +39,7 @@ class WeePlotUtilTest(unittest.TestCase):
                          "(10.00000, 10.00100, 0.00010)")
 
         self.assertEqual("(%.5f, %.5f, %.5f)" % scale(10.0, 10.0 + 1e-8),
-                         "(10.00000, 10.12000, 0.02000)")
+                         "(10.00000, 10.10000, 0.01000)")
 
         self.assertEqual("(%.5f, %.5f, %.5f)" % scale(0.0, 0.05, (None, None, .1), 10),
                          "(0.00000, 1.00000, 0.10000)")
@@ -67,6 +67,19 @@ class WeePlotUtilTest(unittest.TestCase):
 
         self.assertEqual("(%.5f, %.5f, %.5f)" % scale(0.0, 0.0, (0, None, 1), 10),
                          "(0.00000, 10.00000, 2.00000)")
+
+        self.assertEqual("(%.5f, %.5f, %.5f)" % scale(-17.0, -5.0,
+                                                      (0, None, .1), 10),
+                         "(0.00000, 1.00000, 0.20000)")
+
+        self.assertEqual("(%.5f, %.5f, %.5f)" % scale(5.0, 17.0,
+                                                      (None, 1, .1), 10),
+                         "(0.00000, 1.00000, 0.20000)")
+
+        self.assertEqual("(%.5f, %.5f, %.5f)" % scale(5.0, 17.0,
+                                                      (0, 1, None)),
+                         "(0.00000, 1.00000, 0.20000)")
+
 
     def test_scaletime(self):
         """test function scaletime()"""

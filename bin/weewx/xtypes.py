@@ -1,10 +1,12 @@
 #
-#    Copyright (c) 2019 Tom Keffer <tkeffer@gmail.com>
+#    Copyright (c) 2019-2021 Tom Keffer <tkeffer@gmail.com>
 #
 #    See the file LICENSE.txt for your full rights.
 #
 """User-defined extensions to the WeeWX type system"""
 
+import datetime
+import time
 import math
 
 import weedb
@@ -84,8 +86,9 @@ def get_series(obs_type, timespan, db_manager, aggregate_type=None, aggregate_in
             # Try this function. It will raise an exception if it does not know about the type.
             return xtype.get_series(obs_type, timespan, db_manager, aggregate_type,
                                     aggregate_interval)
-        except weewx.UnknownType:
-            # This function does not know about the type. Move on to the next one.
+        except (weewx.UnknownType, weewx.UnknownAggregation):
+            # This function does not know about the type and/or aggregation.
+            # Move on to the next one.
             pass
     # None of the functions worked.
     raise weewx.UnknownType(obs_type)
@@ -100,7 +103,7 @@ def get_aggregate(obs_type, timespan, aggregate_type, db_manager, **option_dict)
             # aggregation.
             return xtype.get_aggregate(obs_type, timespan, aggregate_type, db_manager,
                                        **option_dict)
-        except (weewx.UnknownAggregation, weewx.UnknownType):
+        except (weewx.UnknownType, weewx.UnknownAggregation):
             pass
     raise weewx.UnknownAggregation("%s('%s')" % (aggregate_type, obs_type))
 
@@ -138,6 +141,8 @@ class ArchiveTable(XType):
             for stamp in weeutil.weeutil.intervalgen(startstamp, stopstamp, aggregate_interval):
                 # Get the aggregate as a ValueTuple
                 agg_vt = get_aggregate(obs_type, stamp, do_aggregate, db_manager)
+                if agg_vt[0] is None:
+                    continue
                 if unit:
                     # It's OK if the unit is unknown (=None).
                     if agg_vt[1] is not None and (unit != agg_vt[1] or unit_group != agg_vt[2]):
@@ -158,7 +163,7 @@ class ArchiveTable(XType):
 
             # No aggregation
             sql_str = "SELECT dateTime, %s, usUnits, `interval` FROM %s " \
-                      "WHERE dateTime >= ? AND dateTime <= ?" % (obs_type, db_manager.table_name)
+                      "WHERE dateTime > ? AND dateTime <= ?" % (obs_type, db_manager.table_name)
 
             std_unit_system = None
 
@@ -198,29 +203,23 @@ class ArchiveTable(XType):
                 "AND a.dateTime = (SELECT MIN(dateTime) FROM archive "
                 "WHERE dateTime >= %(start)s);",
         'first': "SELECT %(obs_type)s FROM %(table_name)s "
-                 "WHERE dateTime = (SELECT MIN(dateTime) FROM %(table_name)s "
-                 "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  "
-                 "AND %(obs_type)s IS NOT NULL)",
+                 "WHERE dateTime > %(start)s AND dateTime <= %(stop)s "
+                 "AND %(obs_type)s IS NOT NULL ORDER BY dateTime ASC LIMIT 1",
         'firsttime': "SELECT MIN(dateTime) FROM %(table_name)s "
-                     "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  "
+                     "WHERE dateTime > %(start)s AND dateTime <= %(stop)s "
                      "AND %(obs_type)s IS NOT NULL",
         'last': "SELECT %(obs_type)s FROM %(table_name)s "
-                "WHERE dateTime = (SELECT MAX(dateTime) FROM %(table_name)s "
-                "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  "
-                "AND %(obs_type)s IS NOT NULL)",
+                "WHERE dateTime > %(start)s AND dateTime <= %(stop)s "
+                "AND %(obs_type)s IS NOT NULL ORDER BY dateTime DESC LIMIT 1",
         'lasttime': "SELECT MAX(dateTime) FROM %(table_name)s "
-                    "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  "
+                    "WHERE dateTime > %(start)s AND dateTime <= %(stop)s "
                     "AND %(obs_type)s IS NOT NULL",
         'maxtime': "SELECT dateTime FROM %(table_name)s "
-                   "WHERE dateTime > %(start)s AND dateTime <= %(stop)s AND "
-                   "%(obs_type)s = (SELECT MAX(%(obs_type)s) FROM %(table_name)s "
-                   "WHERE dateTime > %(start)s and dateTime <= %(stop)s) "
-                   "AND %(obs_type)s IS NOT NULL",
+                   "WHERE dateTime > %(start)s AND dateTime <= %(stop)s "
+                   "AND %(obs_type)s IS NOT NULL ORDER BY %(obs_type)s DESC LIMIT 1",
         'mintime': "SELECT dateTime FROM %(table_name)s "
-                   "WHERE dateTime > %(start)s AND dateTime <= %(stop)s AND "
-                   "%(obs_type)s = (SELECT MIN(%(obs_type)s) FROM %(table_name)s "
-                   "WHERE dateTime > %(start)s and dateTime <= %(stop)s) "
-                   "AND %(obs_type)s IS NOT NULL",
+                   "WHERE dateTime > %(start)s AND dateTime <= %(stop)s "
+                   "AND %(obs_type)s IS NOT NULL ORDER BY %(obs_type)s ASC LIMIT 1",
         'tderiv': "SELECT (b.%(obs_type)s - a.%(obs_type)s) / (b.dateTime-a.dateTime) "
                   "FROM archive a, archive b "
                   "WHERE b.dateTime = (SELECT MAX(dateTime) FROM archive "
@@ -252,8 +251,8 @@ class ArchiveTable(XType):
     
         returns: A ValueTuple containing the result."""
 
-        if aggregate_type not in ['sum', 'count', 'avg', 'max', 'min'] + list(
-                ArchiveTable.agg_sql_dict.keys()):
+        if aggregate_type not in ['sum', 'count', 'avg', 'max', 'min'] \
+                + list(ArchiveTable.agg_sql_dict.keys()):
             raise weewx.UnknownAggregation(aggregate_type)
 
         interpolate_dict = {
@@ -303,16 +302,19 @@ class ArchiveTable(XType):
 class DailySummaries(XType):
     """Calculate from the daily summaries."""
 
-    # Set of SQL statements to be used for calculating aggregates from the daily summaries.
-    daily_sql_dict = {
+    # Set of SQL statements to be used for calculating simple aggregates from the daily summaries.
+    agg_sql_dict = {
         'avg': "SELECT SUM(wsum),SUM(sumtime) FROM %(table_name)s_day_%(obs_key)s "
                "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
+        'avg_ge': "SELECT SUM((wsum/sumtime) >= %(val)s) FROM %(table_name)s_day_%(obs_key)s "
+                  "WHERE dateTime >= %(start)s AND dateTime < %(stop)s and sumtime <> 0",
+        'avg_le': "SELECT SUM((wsum/sumtime) <= %(val)s) FROM %(table_name)s_day_%(obs_key)s "
+                  "WHERE dateTime >= %(start)s AND dateTime < %(stop)s and sumtime <> 0",
         'count': "SELECT SUM(count) FROM %(table_name)s_day_%(obs_key)s "
                  "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'gustdir': "SELECT max_dir FROM %(table_name)s_day_%(obs_key)s  "
                    "WHERE dateTime >= %(start)s AND dateTime < %(stop)s "
-                   "AND max = (SELECT MAX(max) FROM %(table_name)s_day_%(obs_key)s "
-                   "WHERE dateTime >= %(start)s AND dateTime < %(stop)s)",
+                   "ORDER BY max DESC, maxtime ASC LIMIT 1",
         'max': "SELECT MAX(max) FROM %(table_name)s_day_%(obs_key)s "
                "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'max_ge': "SELECT SUM(max >= %(val)s) FROM %(table_name)s_day_%(obs_key)s "
@@ -323,18 +325,18 @@ class DailySummaries(XType):
                   "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'maxmintime': "SELECT mintime FROM %(table_name)s_day_%(obs_key)s  "
                       "WHERE dateTime >= %(start)s AND dateTime < %(stop)s "
-                      "AND min = (SELECT MAX(min) FROM %(table_name)s_day_%(obs_key)s "
-                      "WHERE dateTime >= %(start)s AND dateTime <%(stop)s)",
+                      "AND mintime IS NOT NULL "
+                      "ORDER BY min DESC, mintime ASC LIMIT 1",
         'maxsum': "SELECT MAX(sum) FROM %(table_name)s_day_%(obs_key)s "
                   "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'maxsumtime': "SELECT maxtime FROM %(table_name)s_day_%(obs_key)s  "
                       "WHERE dateTime >= %(start)s AND dateTime < %(stop)s "
-                      "AND sum = (SELECT MAX(sum) FROM %(table_name)s_day_%(obs_key)s "
-                      "WHERE dateTime >= %(start)s AND dateTime <%(stop)s)",
+                      "AND maxtime IS NOT NULL "
+                      "ORDER BY sum DESC, maxtime ASC LIMIT 1",
         'maxtime': "SELECT maxtime FROM %(table_name)s_day_%(obs_key)s  "
                    "WHERE dateTime >= %(start)s AND dateTime < %(stop)s "
-                   "AND max = (SELECT MAX(max) FROM %(table_name)s_day_%(obs_key)s "
-                   "WHERE dateTime >= %(start)s AND dateTime <%(stop)s)",
+                   "AND maxtime IS NOT NULL "
+                   "ORDER BY max DESC, maxtime ASC LIMIT 1",
         'meanmax': "SELECT AVG(max) FROM %(table_name)s_day_%(obs_key)s "
                    "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'meanmin': "SELECT AVG(min) FROM %(table_name)s_day_%(obs_key)s "
@@ -349,18 +351,18 @@ class DailySummaries(XType):
                   "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'minmaxtime': "SELECT maxtime FROM %(table_name)s_day_%(obs_key)s  "
                       "WHERE dateTime >= %(start)s AND dateTime < %(stop)s "
-                      "AND max = (SELECT MIN(max) FROM %(table_name)s_day_%(obs_key)s "
-                      "WHERE dateTime >= %(start)s AND dateTime <%(stop)s)",
+                      "AND maxtime IS NOT NULL "
+                      "ORDER BY max ASC, maxtime ASC ",
         'minsum': "SELECT MIN(sum) FROM %(table_name)s_day_%(obs_key)s "
                   "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'minsumtime': "SELECT mintime FROM %(table_name)s_day_%(obs_key)s  "
                       "WHERE dateTime >= %(start)s AND dateTime < %(stop)s "
-                      "AND sum = (SELECT MIN(sum) FROM %(table_name)s_day_%(obs_key)s "
-                      "WHERE dateTime >= %(start)s AND dateTime <%(stop)s)",
+                      "AND mintime IS NOT NULL "
+                      "ORDER BY sum ASC, mintime ASC LIMIT 1",
         'mintime': "SELECT mintime FROM %(table_name)s_day_%(obs_key)s  "
                    "WHERE dateTime >= %(start)s AND dateTime < %(stop)s "
-                   "AND min = (SELECT MIN(min) FROM %(table_name)s_day_%(obs_key)s "
-                   "WHERE dateTime >= %(start)s AND dateTime <%(stop)s)",
+                   "AND mintime IS NOT NULL "
+                   "ORDER BY min ASC, mintime ASC LIMIT 1",
         'rms': "SELECT SUM(wsquaresum),SUM(sumtime) FROM %(table_name)s_day_%(obs_key)s "
                "WHERE dateTime >= %(start)s AND dateTime < %(stop)s",
         'sum': "SELECT SUM(sum) FROM %(table_name)s_day_%(obs_key)s "
@@ -394,24 +396,18 @@ class DailySummaries(XType):
     
         returns: A ValueTuple containing the result."""
 
-        # Check to see if this is a valid daily summary type:
-        if not hasattr(db_manager, 'daykeys') or obs_type not in db_manager.daykeys:
-            raise weewx.UnknownType(obs_type)
+        # We cannot use the daily summaries if there is no aggregation
+        if not aggregate_type:
+            raise weewx.UnknownAggregation(aggregate_type)
 
         aggregate_type = aggregate_type.lower()
 
         # Raise exception if we don't know about this type of aggregation
-        if aggregate_type not in DailySummaries.daily_sql_dict:
+        if aggregate_type not in DailySummaries.agg_sql_dict:
             raise weewx.UnknownAggregation(aggregate_type)
 
-        # We cannot use the day summaries if the starting and ending times of the aggregation
-        # interval are not on midnight boundaries, and are not the first or last records in the
-        # database.
-        if db_manager.first_timestamp is None or db_manager.last_timestamp is None:
-            raise weewx.UnknownAggregation(aggregate_type)
-        if not (isStartOfDay(timespan.start) or timespan.start == db_manager.first_timestamp) \
-                or not (isStartOfDay(timespan.stop) or timespan.stop == db_manager.last_timestamp):
-            raise weewx.UnknownAggregation(aggregate_type)
+        # Check to see whether we can use the daily summaries:
+        DailySummaries._check_eligibility(obs_type, timespan, db_manager, aggregate_type)
 
         val = option_dict.get('val')
         if val is None:
@@ -437,7 +433,7 @@ class DailySummaries(XType):
         }
 
         # Run the query against the database:
-        row = db_manager.getSql(DailySummaries.daily_sql_dict[aggregate_type] % inter_dict)
+        row = db_manager.getSql(DailySummaries.agg_sql_dict[aggregate_type] % inter_dict)
 
         # Each aggregation type requires a slightly different calculation.
         if not row or None in row:
@@ -453,7 +449,7 @@ class DailySummaries(XType):
 
         elif aggregate_type in ['mintime', 'maxmintime', 'maxtime', 'minmaxtime', 'maxsumtime',
                                 'minsumtime', 'count', 'max_ge', 'max_le', 'min_ge', 'min_le',
-                                'sum_ge', 'sum_le']:
+                                'sum_ge', 'sum_le', 'avg_ge', 'avg_le']:
             # These aggregates are always integers:
             value = int(row[0])
 
@@ -481,6 +477,137 @@ class DailySummaries(XType):
                                                aggregate_type)
         # Form the ValueTuple and return it:
         return weewx.units.ValueTuple(value, t, g)
+
+    # These are SQL statements used for calculating series from the daily summaries.
+    # They include "group_def", which will be replaced with a database-specific GROUP BY clause
+    common = {
+        'min': "SELECT MIN(dateTime), MAX(dateTime), MIN(min) "
+               "FROM %(day_table)s "
+               "WHERE dateTime>=%(start)s AND dateTime<%(stop)s %(group_def)s",
+        'max': "SELECT MIN(dateTime), MAX(dateTime), MAX(max) "
+               "FROM %(day_table)s "
+               "WHERE dateTime>=%(start)s AND dateTime<%(stop)s %(group_def)s",
+        'avg': "SELECT MIN(dateTime), MAX(dateTime), SUM(wsum), SUM(sumtime) "
+               "FROM %(day_table)s "
+               "WHERE dateTime>=%(start)s AND dateTime<%(stop)s %(group_def)s",
+        'sum': "SELECT MIN(dateTime), MAX(dateTime), SUM(sum) "
+               "FROM %(day_table)s "
+               "WHERE dateTime>=%(start)s AND dateTime<%(stop)s %(group_def)s",
+        'count': "SELECT MIN(dateTime), MAX(dateTime), SUM(count) "
+                 "FROM %(day_table)s "
+                 "WHERE dateTime>=%(start)s AND dateTime<%(stop)s %(group_def)s",
+    }
+    # Database- and interval-specific "GROUP BY" clauses.
+    group_defs = {
+        'sqlite': {
+            'day': "GROUP BY CAST("
+                   "    (julianday(dateTime,'unixepoch','localtime') - 0.5 "
+                   "       - CAST(julianday(%(sod)s, 'unixepoch','localtime') AS int)) "
+                   "     / %(agg_days)s "
+                   "AS int)",
+            'month': "GROUP BY strftime('%%Y-%%m',dateTime,'unixepoch','localtime') ",
+            'year': "GROUP BY strftime('%%Y',dateTime,'unixepoch','localtime') ",
+        },
+        'mysql': {
+            'day': "GROUP BY TRUNCATE((TO_DAYS(FROM_UNIXTIME(dateTime)) "
+                   "- TO_DAYS(FROM_UNIXTIME(%(sod)s)))/ %(agg_days)s, 0) ",
+            'month': "GROUP BY DATE_FORMAT(FROM_UNIXTIME(dateTime), '%%%%Y-%%%%m') ",
+            'year': "GROUP BY DATE_FORMAT(FROM_UNIXTIME(dateTime), '%%%%Y') ",
+        },
+    }
+
+    @staticmethod
+    def get_series(obs_type, timespan, db_manager, aggregate_type=None, aggregate_interval=None):
+
+        # We cannot use the daily summaries if there is no aggregation
+        if not aggregate_type:
+            raise weewx.UnknownAggregation(aggregate_type)
+
+        aggregate_type = aggregate_type.lower()
+
+        # Raise exception if we don't know about this type of aggregation
+        if aggregate_type not in DailySummaries.common:
+            raise weewx.UnknownAggregation(aggregate_type)
+
+        # Check to see whether we can use the daily summaries:
+        DailySummaries._check_eligibility(obs_type, timespan, db_manager, aggregate_type)
+
+        # We also have to make sure the aggregation interval is either the length of a nominal
+        # month or year, or some multiple of a calendar day.
+        aggregate_interval = weeutil.weeutil.nominal_spans(aggregate_interval)
+        if aggregate_interval != weeutil.weeutil.nominal_intervals['year'] \
+                and aggregate_interval != weeutil.weeutil.nominal_intervals['month'] \
+                and aggregate_interval % 86400:
+            raise weewx.UnknownAggregation(aggregate_interval)
+
+        # We're good. Proceed.
+        dbtype = db_manager.connection.dbtype
+        interp_dict = {
+            'agg_days': aggregate_interval / 86400,
+            'day_table': "%s_day_%s" % (db_manager.table_name, obs_type),
+            'obs_type': obs_type,
+            'sod': weeutil.weeutil.startOfDay(timespan.start),
+            'start': timespan.start,
+            'stop': timespan.stop,
+        }
+        if aggregate_interval == weeutil.weeutil.nominal_intervals['year']:
+            group_by_group = 'year'
+        elif aggregate_interval == weeutil.weeutil.nominal_intervals['month']:
+            group_by_group = 'month'
+        else:
+            group_by_group = 'day'
+        # Add the database-specific GROUP_BY clause to the interpolation dictionary
+        interp_dict['group_def'] = DailySummaries.group_defs[dbtype][group_by_group] % interp_dict
+        # This is the final SELECT statement.
+        sql_stmt = DailySummaries.common[aggregate_type] % interp_dict
+
+        start_list = list()
+        stop_list = list()
+        data_list = list()
+
+        for row in db_manager.genSql(sql_stmt):
+            # Find the start of this aggregation interval. That's easy: it's the minimum value.
+            start_time = row[0]
+            # The stop is a little trickier. It's the maximum dateTime in the interval, plus one
+            # day. The extra day is needed because the timestamp marks the beginning of a day in a
+            # daily summary.
+            stop_date = datetime.date.fromtimestamp(row[1]) + datetime.timedelta(days=1)
+            stop_time = int(time.mktime(stop_date.timetuple()))
+
+            if aggregate_type in {'min', 'max', 'sum', 'count'}:
+                data = row[2]
+            elif aggregate_type == 'avg':
+                data = row[2] / row[3] if row[3] else None
+            else:
+                # Shouldn't really have made it here. Fail hard
+                raise ValueError("Unknown aggregation type %s" % aggregate_type)
+
+            start_list.append(start_time)
+            stop_list.append(stop_time)
+            data_list.append(data)
+
+        # Look up the unit type and group of this combination of observation type and aggregation:
+        unit, unit_group = weewx.units.getStandardUnitType(db_manager.std_unit_system, obs_type,
+                                                           aggregate_type)
+        return (ValueTuple(start_list, 'unix_epoch', 'group_time'),
+                ValueTuple(stop_list, 'unix_epoch', 'group_time'),
+                ValueTuple(data_list, unit, unit_group))
+
+    @staticmethod
+    def _check_eligibility(obs_type, timespan, db_manager, aggregate_type):
+
+        # It has to be a type we know about
+        if not hasattr(db_manager, 'daykeys') or obs_type not in db_manager.daykeys:
+            raise weewx.UnknownType(obs_type)
+
+        # We cannot use the day summaries if the starting and ending times of the aggregation
+        # interval are not on midnight boundaries, and are not the first or last records in the
+        # database.
+        if db_manager.first_timestamp is None or db_manager.last_timestamp is None:
+            raise weewx.UnknownAggregation(aggregate_type)
+        if not (isStartOfDay(timespan.start) or timespan.start == db_manager.first_timestamp) \
+                or not (isStartOfDay(timespan.stop) or timespan.stop == db_manager.last_timestamp):
+            raise weewx.UnknownAggregation(aggregate_type)
 
 
 #
@@ -579,25 +706,19 @@ class WindVec(XType):
 
     agg_sql_dict = {
         'count': "SELECT COUNT(dateTime), usUnits FROM %(table_name)s "
-                 "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL)",
+                 "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL",
         'first': "SELECT %(mag)s, %(dir)s, usUnits FROM %(table_name)s "
-                 "WHERE dateTime = (SELECT MIN(dateTime) FROM %(table_name)s "
-                 "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL)",
+                 "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL "
+                 "ORDER BY dateTime ASC LIMIT 1",
         'last': "SELECT %(mag)s, %(dir)s, usUnits FROM %(table_name)s "
-                "WHERE dateTime = (SELECT MAX(dateTime) FROM %(table_name)s "
-                "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL)",
+                "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL "
+                "ORDER BY dateTime DESC LIMIT 1",
         'min': "SELECT %(mag)s, %(dir)s, usUnits FROM %(table_name)s "
                "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL "
                "ORDER BY %(mag)s ASC LIMIT 1;",
-        # 'min': "SELECT %(mag)s, %(dir)s, usUnits FROM %(table_name)s "
-        #        "WHERE %(mag)s = (SELECT MIN(%(mag)s) FROM %(table_name)s "
-        #        "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL)",
         'max': "SELECT %(mag)s, %(dir)s, usUnits FROM %(table_name)s "
                "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL "
                "ORDER BY %(mag)s DESC LIMIT 1;",
-        # 'max': "SELECT %(mag)s, %(dir)s, usUnits FROM %(table_name)s "
-        #        "WHERE %(mag)s = (SELECT MAX(%(mag)s) FROM %(table_name)s "
-        #        "WHERE dateTime > %(start)s AND dateTime <= %(stop)s  AND %(mag)s IS NOT NULL)",
     }
     # for types 'avg', 'sum'
     complex_sql_wind = 'SELECT %(mag)s, %(dir)s, usUnits FROM %(table_name)s WHERE dateTime > ? ' \
@@ -693,7 +814,7 @@ class WindVec(XType):
         interpolation_dict = {
             'dir': WindVec.windvec_types[obs_type][1],
             'mag': WindVec.windvec_types[obs_type][0],
-            'start': weeutil.weeutil.startOfDay(timespan.start),
+            'start': timespan.start,
             'stop': timespan.stop,
             'table_name': db_manager.table_name
         }
@@ -713,8 +834,8 @@ class WindVec(XType):
                 std_unit_system = db_manager.std_unit_system
                 value = None
         else:
-            # The result is more complex, requiring vector arithmetic. We will have to do it
-            # in Python
+            # The requested aggregation must be either 'sum' or 'avg', which will require some
+            # arithmetic in Python, so it cannot be done by a simple query.
             std_unit_system = None
             xsum = ysum = 0.0
             count = 0
@@ -810,6 +931,53 @@ class WindVecDaily(XType):
         return weewx.units.ValueTuple(value, t, g)
 
 
+class XTypeTable(XType):
+    """Calculate a series for an xtype. An xtype may not necessarily be in the database, so
+    this version calculates it on the fly. Note: this version only works if no aggregation has
+    been requested."""
+
+    @staticmethod
+    def get_series(obs_type, timespan, db_manager, aggregate_type=None, aggregate_interval=None):
+        """Get a series of an xtype, by using the main archive table. Works only for no
+        aggregation. """
+
+        start_vec = list()
+        stop_vec = list()
+        data_vec = list()
+
+        if aggregate_type:
+            # This version does not know how to do aggregations, although this could be
+            # added in the future.
+            raise weewx.UnknownAggregation(aggregate_type)
+
+        else:
+            # No aggregation
+
+            std_unit_system = None
+
+            # Hit the database.
+            for record in db_manager.genBatchRecords(*timespan):
+
+                if std_unit_system:
+                    if std_unit_system != record['usUnits']:
+                        raise weewx.UnsupportedFeature("Unit system cannot change "
+                                                       "within a series.")
+                else:
+                    std_unit_system = record['usUnits']
+
+                # Given a record, use the xtypes system to calculate a value:
+                value = get_scalar(obs_type, record, db_manager)
+                start_vec.append(record['dateTime'] - record['interval'] * 60)
+                stop_vec.append(record['dateTime'])
+                data_vec.append(value[0])
+
+            unit, unit_group = weewx.units.getStandardUnitType(std_unit_system, obs_type)
+
+        return (ValueTuple(start_vec, 'unix_epoch', 'group_time'),
+                ValueTuple(stop_vec, 'unix_epoch', 'group_time'),
+                ValueTuple(data_vec, unit, unit_group))
+
+
 # Add instantiated versions to the extension list. Order matters. We want the highly-specialized
 # versions first, because they might offer optimizations.
 xtypes.append(WindVecDaily())
@@ -817,3 +985,4 @@ xtypes.append(WindVec())
 xtypes.append(AggregateHeatCool())
 xtypes.append(DailySummaries())
 xtypes.append(ArchiveTable())
+xtypes.append(XTypeTable())

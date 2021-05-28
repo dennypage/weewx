@@ -73,10 +73,16 @@ help: info
 	@echo "  update-yum-repo"
 	@echo "    push-yum-repo"
 	@echo ""
+	@echo " suse repository management"
+	@echo "   pull-suse-repo"
+	@echo " update-suse-repo"
+	@echo "   push-suse-repo"
+	@echo ""
 
 info:
 	@echo "     VERSION: $(VERSION)"
 	@echo "   MMVERSION: $(MMVERSION)"
+	@echo "      PYTHON: $(PYTHON)"
 	@echo "         CWD: $(CWD)"
 	@echo "        USER: $(USER)"
 	@echo "   WEEWX_COM: $(WEEWX_COM)"
@@ -97,7 +103,7 @@ check-docs:
 
 # if no suite is specified, find all test suites in the source tree
 ifndef SUITE
-SUITE=`find bin -name "test_*.py"`
+SUITE=`find bin examples -name "test_*.py"`
 endif
 test:
 	@rm -f $(BLDDIR)/test-results
@@ -107,7 +113,7 @@ test:
 	@for f in $(SUITE); do \
   echo running $$f; \
   echo $$f >> $(BLDDIR)/test-results; \
-  PYTHONPATH="bin:examples" $(PYTHON) $$f >> $(BLDDIR)/test-results 2>&1; \
+  PYTHONPATH="bin:examples:bin/weewx/tests" $(PYTHON) $$f >> $(BLDDIR)/test-results 2>&1; \
   echo >> $(BLDDIR)/test-results; \
 done
 	@grep "ERROR:\|FAIL:" $(BLDDIR)/test-results || echo "no failures"
@@ -115,13 +121,16 @@ done
 	@echo "see $(BLDDIR)/test-results for output from the tests"
 
 test-setup:
-	bin/weedb/test/setup_mysql
+	bin/weedb/tests/setup_mysql
 
 TESTDIR=/var/tmp/weewx_test
 MYSQLCLEAN="drop database test_weewx;\n\
 drop database test_alt_weewx;\n\
 drop database test_sim;\n\
-drop database test_weewx1;\n"
+drop database test_weewx1;\n\
+drop database test_weewx2;\n\
+drop database test_scratch;\n"
+
 test-clean:
 	rm -rf $(TESTDIR)
 	echo $(MYSQLCLEAN) | mysql --user=weewx --password=weewx --force >/dev/null 2>&1
@@ -144,7 +153,7 @@ upload-docs:
 
 # update the version in all relevant places
 VDOCS=readme.htm customizing.htm devnotes.htm hardware.htm usersguide.htm upgrading.htm utilities.htm
-VCONFIGS=weewx.conf bin/weecfg/tests/expected/weewx40_user_expected.conf
+VCONFIGS=weewx.conf bin/weecfg/tests/expected/weewx43_user_expected.conf
 version:
 	for f in $(VDOCS); do \
   sed -e 's/^Version: [0-9].*/Version: $(MMVERSION)/' docs/$$f > docs/$$f.tmp; \
@@ -310,7 +319,7 @@ DEB3_PKG=python3-weewx_$(DEBVER)_$(DEBARCH).deb
 RHEL7_PKG=weewx-$(RPMVER).el7.$(RPMARCH).rpm
 RHEL8_PKG=weewx-$(RPMVER).el8.$(RPMARCH).rpm
 SUSE12_PKG=weewx-$(RPMVER).suse12.$(RPMARCH).rpm
-SUSE12_PKG=weewx-$(RPMVER).suse15.$(RPMARCH).rpm
+SUSE15_PKG=weewx-$(RPMVER).suse15.$(RPMARCH).rpm
 upload-pkgs:
 	scp $(DSTDIR)/$(DEB2_PKG) $(DSTDIR)/$(DEB3_PKG) $(DSTDIR)/$(RHEL7_PKG) $(DSTDIR)/$(RHEL8_PKG) $(DSTDIR)/$(SUSE12_PKG) $(DSTDIR)/$(SUSE15_PKG) $(USER)@$(WEEWX_COM):$(WEEWX_STAGING)
 
@@ -363,11 +372,13 @@ update-apt-repo:
 
 # publish apt repo changes to the public weewx apt repo
 push-apt-repo:
-	rsync -arvz ~/.aptly/ $(USER)@$(WEEWX_COM):$(WEEWX_HTMLDIR)/aptly-test
+	find ~/.aptly -type f -exec chmod 664 {} \;
+	find ~/.aptly -type d -exec chmod 2775 {} \;
+	rsync -rtlvz ~/.aptly/ $(USER)@$(WEEWX_COM):$(WEEWX_HTMLDIR)/aptly-test
 
 # copy the testing repository onto the production repository
 release-apt-repo:
-	ssh $(USER)@$(WEEWX_COM) "rsync -arvz /var/www/html/aptly-test/ /var/www/html/aptly"
+	ssh $(USER)@$(WEEWX_COM) "rsync -logrvz /var/www/html/aptly-test/ /var/www/html/aptly"
 
 YUM_REPO=~/.yum/weewx
 yum-repo:
@@ -387,11 +398,13 @@ update-yum-repo:
 	createrepo $(YUM_REPO)/el8
 
 push-yum-repo:
-	rsync -arvz ~/.yum/ $(USER)@$(WEEWX_COM):$(WEEWX_HTMLDIR)/yum-test
+	find ~/.yum -type f -exec chmod 664 {} \;
+	find ~/.yum -type d -exec chmod 2775 {} \;
+	rsync -rtlvz ~/.yum/ $(USER)@$(WEEWX_COM):$(WEEWX_HTMLDIR)/yum-test
 
 # copy the testing repository onto the production repository
 release-yum-repo:
-	ssh $(USER)@$(WEEWX_COM) "rsync -arvz /var/www/html/yum-test/ /var/www/html/yum"
+	ssh $(USER)@$(WEEWX_COM) "rsync -logrvz /var/www/html/yum-test/ /var/www/html/yum"
 
 SUSE_REPO=~/.suse/weewx
 suse-repo:
@@ -411,11 +424,13 @@ update-suse-repo:
 	createrepo $(SUSE_REPO)/suse15
 
 push-suse-repo:
-	rsync -arvz ~/.suse/ $(USER)@$(WEEWX_COM):$(WEEWX_HTMLDIR)/suse-test
+	find ~/.suse -type f -exec chmod 664 {} \;
+	find ~/.suse -type d -exec chmod 2775 {} \;
+	rsync -rtlvz ~/.suse/ $(USER)@$(WEEWX_COM):$(WEEWX_HTMLDIR)/suse-test
 
 # copy the testing repository onto the production repository
 release-suse-repo:
-	ssh $(USER)@$(WEEWX_COM) "rsync -arvz /var/www/html/suse-test/ /var/www/html/suse"
+	ssh $(USER)@$(WEEWX_COM) "rsync -logrvz /var/www/html/suse-test/ /var/www/html/suse"
 
 # run perlcritic to ensure clean perl code.  put these in ~/.perlcriticrc:
 # [-CodeLayout::RequireTidyCode]
@@ -425,7 +440,4 @@ critic:
 	perlcritic -1 --verbose 8 pkg/mkchangelog.pl
 
 code-summary:
-	cloc bin
-	@for d in weecfg weedb weeutil weewx; do \
-  cloc bin/$$d/tests; \
-done
+	cloc --force-lang="HTML",tmpl --force-lang="INI",conf --force-lang="INI",inc bin docs examples skins util

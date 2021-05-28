@@ -89,7 +89,7 @@
     </tr>
     <tr>
       <td>Outside Temperature with nonsense binding $current($data_binding='foo_binding').outTemp</td>
-      <td>?'foo_binding'?</td>
+      <td>$current($data_binding='foo_binding').outTemp</td>
     </tr>
     <tr>
       <td>Outside Temperature with explicit time</td>
@@ -109,7 +109,7 @@
     </tr>
     <tr>
       <td>Trend with nonsense type</td>
-      <td>?'foobar'?</td>
+      <td>$trend.foobar</td>
     </tr>
     <tr>
       <td>Barometer (normal)</td>
@@ -156,6 +156,10 @@
       <td>29 kph from 128&#176;</td>
     </tr>
     <tr>
+      <td>Wind (beaufort)</td>
+      <td>4</td>
+    </tr>
+    <tr>
       <td>Rain Rate</td>
       <td>0.0 mm/h</td>
     </tr>
@@ -181,6 +185,14 @@
     </tr>
     <tr>
       <td>Test tag "has_data" for a nonsense type: $current.nonsense.has_data</td>
+      <td>FALSE</td>
+    </tr>
+    <tr>
+      <td>Test tag "has_data" for the last hour: $hour.outTemp.has_data</td>
+      <td>TRUE</td>
+    </tr>
+    <tr>
+      <td>Test tag "has_data" for the last hour of a nonsense type: $hour.nonsense.has_data</td>
       <td>FALSE</td>
     </tr>
     <tr>
@@ -387,7 +399,7 @@
       <td>$day.outTemp.min.mbar</td>
     </tr>
     <tr>
-      <td>Max value for a type with no data: $day.soilMoist3.max</td>
+      <td>Max value for a type with no data: $day.UV.max</td>
       <td>   N/A</td>
     </tr>
     <tr>
@@ -435,11 +447,11 @@
       <td>FALSE</td>
     </tr>
     <tr>
-      <td>Test tag "exists" with an existing type that has no data $day.soilMoist3.exists</td>
+      <td>Test tag "exists" with an existing type that has no data $day.UV.exists</td>
       <td>TRUE</td>
     </tr>
     <tr>
-      <td>Test tag "has_data" with existent type that has no data $day.soilMoist3.has_data</td>
+      <td>Test tag "has_data" with existent type that has no data $day.UV.has_data</td>
       <td>FALSE</td>
     </tr>
     <tr>
@@ -731,6 +743,14 @@
       <tr>
         <td align="right">$year.rain.sum_le((0.1, 'inch', 'group_rain'))</td>
         <td align="left">122</td>
+      </tr>
+      <tr>
+        <td align="right">$year.outTemp.avg_ge((41, 'degree_F', 'group_temperature'))</td>
+        <td align="left">153</td>
+      </tr>
+      <tr>
+        <td align="right">$year.outTemp.avg_le((32, 'degree_F', 'group_temperature'))</td>
+        <td align="left">80</td>
       </tr>
   </table>
 
